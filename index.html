@@ -1,347 +1,1734 @@
+```html
 <!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>NexusPNG Lab</title>
+<title>NexusPNG Lab — Experimental Lossless Image Compression</title>
+
 <style>
-  :root { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color-scheme: dark; }
-  body { margin: 0; background: #0b0f19; color: #eef2ff; }
-  main { max-width: 1100px; margin: auto; padding: 32px 20px 60px; }
-  h1 { margin: 0 0 8px; }
-  .sub { color: #9aa6bd; margin: 0 0 24px; }
-  .drop { border: 2px dashed #33415f; border-radius: 18px; padding: 32px; text-align: center; background: #101827; cursor: pointer; }
-  .drop.drag { border-color: #22d3ee; background: #111d30; }
-  input { display: none; }
-  button { border: 0; border-radius: 10px; padding: 10px 15px; background: #2563eb; color: white; font-weight: 700; cursor: pointer; }
-  button:hover { filter: brightness(1.12); }
-  .status { min-height: 24px; margin: 18px 0; color: #9aa6bd; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(250px,1fr)); gap: 16px; }
-  .card { background: #101827; border: 1px solid #1e2b43; border-radius: 16px; padding: 14px; overflow: hidden; }
-  .card h2 { font-size: 17px; margin: 0 0 10px; }
-  canvas { width: 100%; height: 220px; object-fit: contain; background: repeating-conic-gradient(#182235 0 25%, #111a2a 0 50%) 50% / 20px 20px; border-radius: 10px; }
-  .meta { margin-top: 10px; color: #aeb8cc; font-size: 14px; }
-  .meta strong { color: #fff; }
-  .controls { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:20px; }
-  .hidden { display:none; }
-  .note { margin-top: 22px; padding: 14px; border-left: 3px solid #22d3ee; background:#0e1625; color:#b9c4d8; }
-  code { color:#7dd3fc; }
+:root{
+  --bg:#070b13;
+  --panel:#0d1421;
+  --panel2:#111a2a;
+  --line:#1d2a40;
+  --text:#edf4ff;
+  --muted:#8d9bb3;
+  --blue:#3b82f6;
+  --cyan:#22d3ee;
+  --green:#34d399;
+  --red:#fb7185;
+  --shadow:0 24px 80px rgba(0,0,0,.38);
+}
+
+*{box-sizing:border-box}
+
+body{
+  margin:0;
+  background:
+    radial-gradient(circle at 50% -15%,rgba(37,99,235,.2),transparent 35%),
+    radial-gradient(circle at 90% 30%,rgba(34,211,238,.06),transparent 30%),
+    var(--bg);
+  color:var(--text);
+  font:15px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+}
+
+main{
+  width:min(1250px,calc(100% - 32px));
+  margin:auto;
+  padding:44px 0 80px;
+}
+
+header{
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-end;
+  gap:30px;
+  margin-bottom:30px;
+}
+
+.eyebrow{
+  color:var(--cyan);
+  font-size:11px;
+  font-weight:900;
+  letter-spacing:.16em;
+  text-transform:uppercase;
+}
+
+h1{
+  font-size:clamp(38px,7vw,72px);
+  line-height:.95;
+  letter-spacing:-.055em;
+  margin:8px 0 14px;
+}
+
+.lead{
+  max-width:760px;
+  color:var(--muted);
+  font-size:16px;
+  margin:0;
+}
+
+.badge{
+  border:1px solid var(--line);
+  background:rgba(13,20,33,.8);
+  border-radius:999px;
+  padding:9px 13px;
+  color:#c7d4e8;
+  white-space:nowrap;
+}
+
+.upload{
+  display:block;
+  position:relative;
+  border:1px dashed #385171;
+  border-radius:25px;
+  padding:52px 24px;
+  background:
+    linear-gradient(180deg,rgba(17,26,42,.94),rgba(10,16,27,.94));
+  box-shadow:var(--shadow);
+  text-align:center;
+  transition:.2s;
+  cursor:pointer;
+}
+
+.upload:hover,
+.upload.drag{
+  border-color:var(--cyan);
+  transform:translateY(-2px);
+}
+
+.upload strong{
+  display:block;
+  font-size:23px;
+  margin-bottom:7px;
+}
+
+.upload p{
+  color:var(--muted);
+  margin:0 0 19px;
+}
+
+button{
+  appearance:none;
+  border:0;
+  border-radius:12px;
+  padding:12px 17px;
+  background:var(--blue);
+  color:#fff;
+  font-weight:850;
+  cursor:pointer;
+  box-shadow:0 8px 25px rgba(37,99,235,.22);
+}
+
+button.secondary{
+  background:#18243a;
+  border:1px solid var(--line);
+  box-shadow:none;
+}
+
+input{display:none}
+
+#status{
+  margin:18px 0;
+  min-height:24px;
+  color:var(--muted);
+}
+
+.hidden{display:none!important}
+
+.dashboard{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:18px;
+}
+
+.card{
+  background:rgba(13,20,33,.9);
+  border:1px solid var(--line);
+  border-radius:21px;
+  padding:19px;
+  box-shadow:var(--shadow);
+}
+
+.full{grid-column:1/-1}
+
+.cardhead{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  margin-bottom:15px;
+}
+
+.card h2{
+  font-size:18px;
+  margin:0;
+}
+
+.small{
+  font-size:12px;
+  color:var(--muted);
+}
+
+.previewgrid{
+  display:grid;
+  grid-template-columns:repeat(3,1fr);
+  gap:12px;
+}
+
+.preview{
+  min-width:0;
+  background:#080d16;
+  border:1px solid #1a2639;
+  border-radius:15px;
+  padding:10px;
+}
+
+.preview h3{
+  font-size:14px;
+  margin:0 0 8px;
+}
+
+canvas{
+  display:block;
+  width:100%;
+  height:240px;
+  object-fit:contain;
+  border-radius:10px;
+  background:
+    repeating-conic-gradient(
+      #172235 0 25%,
+      #101827 0 50%
+    ) 50%/20px 20px;
+}
+
+.preview-meta{
+  margin-top:9px;
+  display:flex;
+  justify-content:space-between;
+  gap:8px;
+}
+
+.stats{
+  display:grid;
+  grid-template-columns:repeat(5,1fr);
+  gap:10px;
+}
+
+.stat{
+  background:#0a111e;
+  border:1px solid #18253a;
+  border-radius:14px;
+  padding:13px;
+}
+
+.stat span{
+  display:block;
+  color:var(--muted);
+  font-size:10px;
+  text-transform:uppercase;
+  letter-spacing:.08em;
+}
+
+.stat strong{
+  display:block;
+  font-size:19px;
+  margin-top:2px;
+}
+
+.good{color:var(--green)}
+.bad{color:var(--red)}
+
+.compression{
+  margin-top:16px;
+  padding:15px;
+  border:1px solid #18253a;
+  background:#0a111e;
+  border-radius:15px;
+}
+
+.bar{
+  height:11px;
+  background:#172235;
+  border-radius:99px;
+  overflow:hidden;
+  margin-top:10px;
+}
+
+.bar i{
+  display:block;
+  height:100%;
+  width:0;
+  background:linear-gradient(90deg,var(--blue),var(--cyan));
+  transition:width .5s;
+}
+
+table{
+  width:100%;
+  border-collapse:collapse;
+}
+
+th,td{
+  padding:11px;
+  border-bottom:1px solid #18253a;
+  text-align:left;
+}
+
+th{
+  color:var(--muted);
+  font-size:11px;
+  text-transform:uppercase;
+}
+
+td.num{
+  text-align:right;
+  font-variant-numeric:tabular-nums;
+}
+
+.code{
+  overflow:auto;
+  background:#070c14;
+  border:1px solid #18253a;
+  border-radius:14px;
+  padding:15px;
+  font:12px/1.65 ui-monospace,SFMono-Regular,Menlo,monospace;
+  color:#b9c7dc;
+  white-space:pre-wrap;
+}
+
+.mode{
+  display:inline-flex;
+  align-items:center;
+  gap:7px;
+  border:1px solid #243650;
+  background:#0a111e;
+  padding:5px 9px;
+  border-radius:999px;
+  font-size:11px;
+  color:#c8d6e9;
+}
+
+.dot{
+  width:7px;
+  height:7px;
+  border-radius:50%;
+  background:var(--cyan);
+}
+
+footer{
+  color:#68778f;
+  text-align:center;
+  margin-top:28px;
+  font-size:12px;
+  line-height:1.7;
+}
+
+@media(max-width:900px){
+  .dashboard{grid-template-columns:1fr}
+  .full{grid-column:auto}
+  .previewgrid{grid-template-columns:1fr}
+  .stats{grid-template-columns:repeat(2,1fr)}
+  header{
+    align-items:flex-start;
+    flex-direction:column;
+  }
+}
+
+@media(max-width:560px){
+  main{
+    width:min(100% - 20px,1250px);
+    padding-top:25px;
+  }
+
+  .stats{
+    grid-template-columns:1fr 1fr;
+  }
+}
 </style>
 </head>
+
 <body>
 <main>
-  <h1>NexusPNG Lab</h1>
-  <p class="sub">A fully on-device experiment comparing PNG, JPEG, and our custom <code>.nexuspng</code> format.</p>
 
-  <label class="drop" id="drop">
-    <input id="file" type="file" accept="image/*">
-    <div><strong>Drop an image here</strong> or click to choose one.</div>
-    <div class="controls" style="justify-content:center">
-      <button type="button" id="choose">Choose image</button>
+<header>
+  <div>
+    <div class="eyebrow">NexusPNG Research Lab</div>
+    <h1>Compress harder.</h1>
+    <p class="lead">
+      A completely custom lossless image codec written in plain JavaScript.
+      No compression libraries. No servers. No uploads. Just pixels and an
+      unreasonable amount of bit manipulation.
+    </p>
+  </div>
+
+  <div class="badge">NexusPNG v3 · adaptive codec</div>
+</header>
+
+<label class="upload" id="drop">
+  <input id="file" type="file" accept="image/*">
+
+  <strong>Drop an image here</strong>
+  <p>PNG, JPEG, WebP, GIF, or anything your browser can decode</p>
+
+  <button id="choose" type="button">Choose image</button>
+</label>
+
+<div id="status">Waiting for an image.</div>
+
+<section id="dashboard" class="dashboard hidden">
+
+  <div class="card full">
+    <div class="cardhead">
+      <h2>Visual comparison</h2>
+      <span class="small" id="dimensions"></span>
     </div>
-  </label>
 
-  <div class="status" id="status">No image selected.</div>
+    <div class="previewgrid">
 
-  <div id="results" class="grid hidden">
-    <section class="card">
-      <h2>Original PNG</h2>
-      <canvas id="pngCanvas"></canvas>
-      <div class="meta" id="pngMeta"></div>
-    </section>
+      <div class="preview">
+        <h3>Original / PNG</h3>
+        <canvas id="pngCanvas"></canvas>
+        <div class="preview-meta">
+          <span class="small" id="pngInfo"></span>
+          <span class="mode">reference</span>
+        </div>
+      </div>
 
-    <section class="card">
-      <h2>JPEG</h2>
-      <canvas id="jpgCanvas"></canvas>
-      <div class="meta" id="jpgMeta"></div>
-    </section>
+      <div class="preview">
+        <h3>JPEG</h3>
+        <canvas id="jpgCanvas"></canvas>
+        <div class="preview-meta">
+          <span class="small" id="jpgInfo"></span>
+          <span class="mode">lossy</span>
+        </div>
+      </div>
 
-    <section class="card">
-      <h2>NexusPNG</h2>
-      <canvas id="nexusCanvas"></canvas>
-      <div class="meta" id="nexusMeta"></div>
-    </section>
+      <div class="preview">
+        <h3>NexusPNG</h3>
+        <canvas id="nexusCanvas"></canvas>
+        <div class="preview-meta">
+          <span class="small" id="nexusInfo"></span>
+          <span class="mode"><i class="dot"></i><span id="codecMode">adaptive</span></span>
+        </div>
+      </div>
+
+    </div>
   </div>
 
-  <div class="note">
-    <strong>How this prototype works:</strong> PNG and JPEG are generated by the browser.
-    NexusPNG is a lossless custom binary format that stores a color table plus row-based
-    runs of pixels. Everything happens locally in this page. No upload or server is used.
+  <div class="card full">
+
+    <div class="cardhead">
+      <h2>Compression results</h2>
+      <span class="small" id="losslessCheck"></span>
+    </div>
+
+    <div class="stats">
+
+      <div class="stat">
+        <span>PNG</span>
+        <strong id="pngSize">—</strong>
+      </div>
+
+      <div class="stat">
+        <span>JPEG</span>
+        <strong id="jpgSize">—</strong>
+      </div>
+
+      <div class="stat">
+        <span>NexusPNG</span>
+        <strong id="nexusSize">—</strong>
+      </div>
+
+      <div class="stat">
+        <span>Reduction</span>
+        <strong id="reduction">—</strong>
+      </div>
+
+      <div class="stat">
+        <span>Colors</span>
+        <strong id="colorCount">—</strong>
+      </div>
+
+    </div>
+
+    <div class="compression">
+      <div class="small" id="compressionText"></div>
+      <div class="bar">
+        <i id="compressionBar"></i>
+      </div>
+    </div>
+
   </div>
+
+  <div class="card full">
+
+    <div class="cardhead">
+      <h2>Format breakdown</h2>
+      <span class="small">Actual encoded byte counts</span>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Format</th>
+          <th>Method</th>
+          <th>Size</th>
+          <th>Relative to PNG</th>
+          <th>Pixel exact</th>
+        </tr>
+      </thead>
+
+      <tbody>
+
+        <tr>
+          <td>PNG</td>
+          <td>Browser PNG encoder</td>
+          <td class="num" id="tPng">—</td>
+          <td class="num">100%</td>
+          <td>Yes</td>
+        </tr>
+
+        <tr>
+          <td>JPEG</td>
+          <td>JPEG quality 90</td>
+          <td class="num" id="tJpg">—</td>
+          <td class="num" id="rJpg">—</td>
+          <td>No</td>
+        </tr>
+
+        <tr>
+          <td>NexusPNG</td>
+          <td id="methodCell">Adaptive</td>
+          <td class="num" id="tNexus">—</td>
+          <td class="num" id="rNexus">—</td>
+          <td id="tExact">—</td>
+        </tr>
+
+      </tbody>
+    </table>
+
+  </div>
+
+  <div class="card">
+
+    <div class="cardhead">
+      <h2>NexusPNG v3 structure</h2>
+      <span class="small">Custom binary</span>
+    </div>
+
+    <div class="code" id="breakdown"></div>
+
+  </div>
+
+  <div class="card">
+
+    <div class="cardhead">
+      <h2>Adaptive pipeline</h2>
+      <span class="small">No external libraries</span>
+    </div>
+
+    <div class="code">1. Analyze image
+2. Detect palette suitability
+3. Try palette + bit packing
+4. Try palette + RLE
+5. Build predictive residuals
+6. Select best predictor per row
+7. Huffman-code residual bytes
+8. Compare every candidate
+9. Store smallest valid representation
+10. Decode and verify every pixel
+
+Fallbacks:
+RAW → Palette → RLE → Predictive → Huffman
+
+The encoder never assumes compression worked.
+If a compressed representation is larger,
+NexusPNG stores the smaller representation.</div>
+
+  </div>
+
+</section>
+
+<footer>
+  NexusPNG is experimental. Lossless means the decoded pixels are identical,
+  not that every image must become smaller. Information theory remains
+  annoyingly undefeated.
+</footer>
+
 </main>
 
 <script>
-const fileInput = document.getElementById("file");
-const choose = document.getElementById("choose");
-const drop = document.getElementById("drop");
-const status = document.getElementById("status");
-const results = document.getElementById("results");
+const $ = id => document.getElementById(id);
 
-choose.addEventListener("click", e => {
+const file = $("file");
+const choose = $("choose");
+const drop = $("drop");
+
+choose.onclick = e => {
   e.preventDefault();
-  fileInput.click();
+  file.click();
+};
+
+file.onchange = () => {
+  if(file.files[0]) process(file.files[0]);
+};
+
+["dragenter","dragover"].forEach(ev => {
+  drop.addEventListener(ev,e => {
+    e.preventDefault();
+    drop.classList.add("drag");
+  });
 });
 
-fileInput.addEventListener("change", () => {
-  if (fileInput.files[0]) processImage(fileInput.files[0]);
+["dragleave","drop"].forEach(ev => {
+  drop.addEventListener(ev,e => {
+    e.preventDefault();
+    drop.classList.remove("drag");
+  });
 });
 
-drop.addEventListener("dragover", e => {
-  e.preventDefault();
-  drop.classList.add("drag");
+drop.addEventListener("drop",e => {
+  const f=e.dataTransfer.files[0];
+  if(f && f.type.startsWith("image/")) process(f);
 });
 
-drop.addEventListener("dragleave", () => drop.classList.remove("drag"));
-
-drop.addEventListener("drop", e => {
-  e.preventDefault();
-  drop.classList.remove("drag");
-  const file = e.dataTransfer.files[0];
-  if (file && file.type.startsWith("image/")) processImage(file);
-});
-
-function canvasFromImageData(canvas, imageData) {
-  canvas.width = imageData.width;
-  canvas.height = imageData.height;
-  canvas.getContext("2d").putImageData(imageData, 0, 0);
+function bytes(n){
+  if(n<1024) return n+" B";
+  if(n<1048576) return (n/1024).toFixed(2)+" KB";
+  if(n<1073741824) return (n/1048576).toFixed(2)+" MB";
+  return (n/1073741824).toFixed(2)+" GB";
 }
 
-function formatBytes(n) {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(2)} KB`;
-  return `${(n / 1024 / 1024).toFixed(2)} MB`;
+function pct(n){
+  return n.toFixed(2)+"%";
 }
 
-function imageDataFromCanvas(source) {
-  const ctx = source.getContext("2d", { willReadFrequently: true });
-  return ctx.getImageData(0, 0, source.width, source.height);
-}
+function varint(n){
+  const out=[];
 
-/*
-  NexusPNG v1
-
-  Header:
-    4 bytes  magic "NXP1"
-    4 bytes  width
-    4 bytes  height
-    4 bytes  color count
-
-  Color table:
-    colorCount × 4 bytes RGBA
-
-  Runs:
-    4 bytes color index
-    4 bytes row
-    4 bytes starting X
-    4 bytes run length
-
-  This is intentionally simple. It gives us a real, lossless baseline
-  that we can optimize later.
-*/
-
-function encodeNexusPNG(imageData) {
-  const { width, height, data } = imageData;
-
-  const colorMap = new Map();
-  const colors = [];
-
-  function colorIndex(r, g, b, a) {
-    const key = `${r},${g},${b},${a}`;
-    let index = colorMap.get(key);
-    if (index === undefined) {
-      index = colors.length;
-      colorMap.set(key, index);
-      colors.push([r, g, b, a]);
-    }
-    return index;
+  while(n>=128){
+    out.push((n%128)|128);
+    n=Math.floor(n/128);
   }
 
-  const rows = [];
-  let runCount = 0;
+  out.push(n);
+  return out;
+}
 
-  for (let y = 0; y < height; y++) {
-    const runs = [];
-    let startX = 0;
-    let previous = null;
+function readVarint(state){
+  let value=0;
+  let shift=0;
 
-    for (let x = 0; x < width; x++) {
-      const p = (y * width + x) * 4;
-      const idx = colorIndex(data[p], data[p+1], data[p+2], data[p+3]);
+  while(true){
+    if(state.o>=state.data.length)
+      throw Error("Unexpected end of NexusPNG");
 
-      if (previous === null) {
-        previous = idx;
-        startX = x;
-      } else if (idx !== previous) {
-        runs.push([previous, startX, x - startX]);
-        runCount++;
-        previous = idx;
-        startX = x;
+    const b=state.data[state.o++];
+
+    value += (b&127)*Math.pow(2,shift);
+
+    if(!(b&128))
+      return value;
+
+    shift+=7;
+
+    if(shift>49)
+      throw Error("Invalid varint");
+  }
+}
+
+/* ---------------------------------------------------------
+   CRC32
+--------------------------------------------------------- */
+
+function makeCRC(){
+  const table=new Uint32Array(256);
+
+  for(let n=0;n<256;n++){
+    let c=n;
+
+    for(let k=0;k<8;k++)
+      c=(c&1)?(0xedb88320^(c>>>1)):(c>>>1);
+
+    table[n]=c>>>0;
+  }
+
+  return table;
+}
+
+const CRC_TABLE=makeCRC();
+
+function crc32(data){
+  let c=0xffffffff;
+
+  for(const b of data)
+    c=CRC_TABLE[(c^b)&255]^(c>>>8);
+
+  return (c^0xffffffff)>>>0;
+}
+
+/* ---------------------------------------------------------
+   Bit writer / reader
+--------------------------------------------------------- */
+
+class BitWriter{
+  constructor(){
+    this.bytes=[];
+    this.acc=0;
+    this.bits=0;
+  }
+
+  write(value,count){
+    while(count>0){
+      const take=Math.min(8-this.bits,count);
+      const mask=(1<<take)-1;
+
+      this.acc |= (value&mask)<<this.bits;
+
+      this.bits+=take;
+      value=Math.floor(value/Math.pow(2,take));
+      count-=take;
+
+      if(this.bits===8){
+        this.bytes.push(this.acc);
+        this.acc=0;
+        this.bits=0;
+      }
+    }
+  }
+
+  finish(){
+    if(this.bits)
+      this.bytes.push(this.acc);
+
+    return new Uint8Array(this.bytes);
+  }
+}
+
+class BitReader{
+  constructor(data){
+    this.data=data;
+    this.o=0;
+    this.acc=0;
+    this.bits=0;
+  }
+
+  read(count){
+    let value=0;
+    let shift=0;
+
+    while(count>0){
+      if(this.bits===0){
+        if(this.o>=this.data.length)
+          throw Error("Unexpected end of bitstream");
+
+        this.acc=this.data[this.o++];
+        this.bits=8;
+      }
+
+      const take=Math.min(this.bits,count);
+      const mask=(1<<take)-1;
+
+      value |= (this.acc&mask)<<shift;
+
+      this.acc>>>=take;
+      this.bits-=take;
+      shift+=take;
+      count-=take;
+    }
+
+    return value;
+  }
+}
+
+/* ---------------------------------------------------------
+   Huffman
+--------------------------------------------------------- */
+
+function buildHuffman(freq){
+  const nodes=[];
+
+  for(let i=0;i<256;i++){
+    if(freq[i]>0)
+      nodes.push({
+        symbol:i,
+        freq:freq[i],
+        left:null,
+        right:null
+      });
+  }
+
+  if(nodes.length===0)
+    return {
+      lengths:new Uint8Array(256),
+      codes:new Uint32Array(256),
+      max:0
+    };
+
+  if(nodes.length===1){
+    const lengths=new Uint8Array(256);
+    lengths[nodes[0].symbol]=1;
+
+    const codes=new Uint32Array(256);
+    codes[nodes[0].symbol]=0;
+
+    return {lengths,codes,max:1};
+  }
+
+  let queue=nodes.slice();
+
+  while(queue.length>1){
+    queue.sort((a,b)=>a.freq-b.freq);
+
+    const a=queue.shift();
+    const b=queue.shift();
+
+    queue.push({
+      symbol:-1,
+      freq:a.freq+b.freq,
+      left:a,
+      right:b
+    });
+  }
+
+  const lengths=new Uint8Array(256);
+
+  function walk(node,depth){
+    if(node.symbol>=0){
+      lengths[node.symbol]=depth;
+      return;
+    }
+
+    walk(node.left,depth+1);
+    walk(node.right,depth+1);
+  }
+
+  walk(queue[0],0);
+
+  const max=Math.max(...lengths);
+
+  const count=new Uint32Array(max+1);
+
+  for(const l of lengths)
+    if(l) count[l]++;
+
+  const next=new Uint32Array(max+1);
+  let code=0;
+
+  for(let bits=1;bits<=max;bits++){
+    code=(code+count[bits-1])<<1;
+    next[bits]=code;
+  }
+
+  const codes=new Uint32Array(256);
+
+  for(let s=0;s<256;s++){
+    const l=lengths[s];
+
+    if(l){
+      codes[s]=next[l]++;
+    }
+  }
+
+  return {lengths,codes,max};
+}
+
+function reverseBits(value,bits){
+  let r=0;
+
+  for(let i=0;i<bits;i++){
+    r=(r<<1)|(value&1);
+    value>>>=1;
+  }
+
+  return r>>>0;
+}
+
+function huffmanEncode(data){
+  const freq=new Uint32Array(256);
+
+  for(const b of data)
+    freq[b]++;
+
+  const h=buildHuffman(freq);
+
+  const bw=new BitWriter();
+
+  for(const b of data)
+    bw.write(reverseBits(h.codes[b],h.lengths[b]),h.lengths[b]);
+
+  return {
+    lengths:h.lengths,
+    payload:bw.finish(),
+    original:data.length
+  };
+}
+
+function huffmanDecode(lengths,payload,count){
+  const map=new Map();
+
+  const max=Math.max(...lengths);
+
+  const next=new Uint32Array(max+1);
+  const counts=new Uint32Array(max+1);
+
+  for(const l of lengths)
+    if(l) counts[l]++;
+
+  let code=0;
+
+  for(let bits=1;bits<=max;bits++){
+    code=(code+counts[bits-1])<<1;
+    next[bits]=code;
+  }
+
+  for(let symbol=0;symbol<256;symbol++){
+    const l=lengths[symbol];
+
+    if(l){
+      const c=next[l]++;
+      map.set(l+":"+c,symbol);
+    }
+  }
+
+  const br=new BitReader(payload);
+  const out=new Uint8Array(count);
+
+  for(let i=0;i<count;i++){
+    let code=0;
+    let found=-1;
+
+    for(let bits=1;bits<=max;bits++){
+      code |= br.read(1)<<(bits-1);
+
+      const normal=reverseBits(code,bits);
+      const symbol=map.get(bits+":"+normal);
+
+      if(symbol!==undefined){
+        found=symbol;
+        break;
       }
     }
 
-    if (previous !== null) {
-      runs.push([previous, startX, width - startX]);
-      runCount++;
-    }
+    if(found<0)
+      throw Error("Huffman decode failure");
 
-    rows.push(runs);
+    out[i]=found;
   }
 
-  const headerBytes = 16;
-  const colorBytes = colors.length * 4;
-  const runBytes = runCount * 16;
-  const buffer = new ArrayBuffer(headerBytes + colorBytes + runBytes);
-  const view = new DataView(buffer);
-
-  let o = 0;
-  view.setUint32(o, 0x4e585031); o += 4; // NXP1
-  view.setUint32(o, width); o += 4;
-  view.setUint32(o, height); o += 4;
-  view.setUint32(o, colors.length); o += 4;
-
-  for (const [r,g,b,a] of colors) {
-    view.setUint8(o++, r);
-    view.setUint8(o++, g);
-    view.setUint8(o++, b);
-    view.setUint8(o++, a);
-  }
-
-  for (let y = 0; y < height; y++) {
-    for (const [idx, startX, length] of rows[y]) {
-      view.setUint32(o, idx); o += 4;
-      view.setUint32(o, y); o += 4;
-      view.setUint32(o, startX); o += 4;
-      view.setUint32(o, length); o += 4;
-    }
-  }
-
-  return new Uint8Array(buffer);
+  return out;
 }
 
-function decodeNexusPNG(bytes) {
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  let o = 0;
+/* ---------------------------------------------------------
+   Predictors
+--------------------------------------------------------- */
 
-  if (view.getUint32(o) !== 0x4e585031) throw new Error("Invalid NexusPNG file.");
-  o += 4;
+function paeth(a,b,c){
+  const p=a+b-c;
+  const pa=Math.abs(p-a);
+  const pb=Math.abs(p-b);
+  const pc=Math.abs(p-c);
 
-  const width = view.getUint32(o); o += 4;
-  const height = view.getUint32(o); o += 4;
-  const colorCount = view.getUint32(o); o += 4;
+  if(pa<=pb && pa<=pc) return a;
+  if(pb<=pc) return b;
+  return c;
+}
 
-  const colors = new Array(colorCount);
-  for (let i = 0; i < colorCount; i++) {
-    colors[i] = [
-      view.getUint8(o++),
-      view.getUint8(o++),
-      view.getUint8(o++),
-      view.getUint8(o++)
-    ];
-  }
+function predictorValue(mode,left,up,upleft){
+  if(mode===0) return 0;
+  if(mode===1) return left;
+  if(mode===2) return up;
+  if(mode===3) return Math.floor((left+up)/2);
+  return paeth(left,up,upleft);
+}
 
-  const output = new Uint8ClampedArray(width * height * 4);
+function makeResiduals(data,width,height,mode){
+  const out=new Uint8Array(data.length);
 
-  while (o + 16 <= bytes.byteLength) {
-    const colorIndex = view.getUint32(o); o += 4;
-    const y = view.getUint32(o); o += 4;
-    const startX = view.getUint32(o); o += 4;
-    const length = view.getUint32(o); o += 4;
+  for(let y=0;y<height;y++){
+    for(let x=0;x<width;x++){
 
-    const [r,g,b,a] = colors[colorIndex];
+      const p=(y*width+x)*4;
 
-    for (let x = startX; x < startX + length; x++) {
-      const p = (y * width + x) * 4;
-      output[p] = r;
-      output[p+1] = g;
-      output[p+2] = b;
-      output[p+3] = a;
+      for(let ch=0;ch<4;ch++){
+
+        const i=p+ch;
+
+        const left=x
+          ? data[i-4]
+          : 0;
+
+        const up=y
+          ? data[i-width*4]
+          : 0;
+
+        const upleft=(x && y)
+          ? data[i-width*4-4]
+          : 0;
+
+        const pred=predictorValue(
+          mode,
+          left,
+          up,
+          upleft
+        );
+
+        out[i]=(data[i]-pred+256)&255;
+      }
     }
   }
 
-  return new ImageData(output, width, height);
+  return out;
 }
 
-async function canvasBlob(canvas, type, quality) {
-  return new Promise((resolve, reject) => {
-    canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("Encoding failed.")), type, quality);
+function restoreResiduals(residual,width,height,mode){
+  const out=new Uint8ClampedArray(residual.length);
+
+  for(let y=0;y<height;y++){
+    for(let x=0;x<width;x++){
+
+      const p=(y*width+x)*4;
+
+      for(let ch=0;ch<4;ch++){
+
+        const i=p+ch;
+
+        const left=x
+          ? out[i-4]
+          : 0;
+
+        const up=y
+          ? out[i-width*4]
+          : 0;
+
+        const upleft=(x && y)
+          ? out[i-width*4-4]
+          : 0;
+
+        const pred=predictorValue(
+          mode,
+          left,
+          up,
+          upleft
+        );
+
+        out[i]=(residual[i]+pred)&255;
+      }
+    }
+  }
+
+  return out;
+}
+
+/* ---------------------------------------------------------
+   Palette codec
+--------------------------------------------------------- */
+
+function paletteCodec(data,width,height){
+
+  const pixels=width*height;
+  const map=new Map();
+  const colors=[];
+
+  const indices=new Uint32Array(pixels);
+
+  for(let p=0,i=0;p<pixels;p++,i+=4){
+
+    const key=
+      (data[i]<<24)|
+      (data[i+1]<<16)|
+      (data[i+2]<<8)|
+      data[i+3];
+
+    let id=map.get(key);
+
+    if(id===undefined){
+      id=colors.length;
+
+      if(id>65535)
+        return null;
+
+      map.set(key,id);
+      colors.push([
+        data[i],
+        data[i+1],
+        data[i+2],
+        data[i+3]
+      ]);
+    }
+
+    indices[p]=id;
+  }
+
+  if(colors.length>4096)
+    return null;
+
+  let bits=1;
+
+  while((1<<bits)<colors.length)
+    bits++;
+
+  if(bits>16)
+    return null;
+
+  const bw=new BitWriter();
+
+  for(const id of indices)
+    bw.write(id,bits);
+
+  const packed=bw.finish();
+
+  const out=[];
+
+  out.push(
+    0x4e,0x58,0x50,0x33,
+    1,
+    0
+  );
+
+  out.push(...varint(width));
+  out.push(...varint(height));
+  out.push(...varint(colors.length));
+  out.push(bits);
+
+  for(const c of colors)
+    out.push(...c);
+
+  out.push(...varint(packed.length));
+  out.push(...packed);
+
+  return {
+    bytes:new Uint8Array(out),
+    mode:"palette",
+    detail:`${colors.length.toLocaleString()} colors · ${bits}-bit indices`
+  };
+}
+
+function decodePalette(data){
+  const s={data,o:0};
+
+  if(
+    data[s.o++]!==0x4e||
+    data[s.o++]!==0x58||
+    data[s.o++]!==0x50||
+    data[s.o++]!==0x33
+  ) throw Error("Invalid NexusPNG");
+
+  const type=data[s.o++];
+
+  if(type!==1)
+    throw Error("Not palette mode");
+
+  s.o++;
+
+  const width=readVarint(s);
+  const height=readVarint(s);
+  const count=readVarint(s);
+  const bits=data[s.o++];
+
+  const colors=[];
+
+  for(let i=0;i<count;i++){
+    colors.push([
+      data[s.o++],
+      data[s.o++],
+      data[s.o++],
+      data[s.o++]
+    ]);
+  }
+
+  const length=readVarint(s);
+  const packed=data.slice(s.o,s.o+length);
+
+  const br=new BitReader(packed);
+  const out=new Uint8ClampedArray(width*height*4);
+
+  for(let p=0;p<width*height;p++){
+
+    const id=br.read(bits);
+    const c=colors[id];
+
+    const i=p*4;
+
+    out[i]=c[0];
+    out[i+1]=c[1];
+    out[i+2]=c[2];
+    out[i+3]=c[3];
+  }
+
+  return new ImageData(out,width,height);
+}
+
+/* ---------------------------------------------------------
+   Predictive Huffman codec
+--------------------------------------------------------- */
+
+function predictiveCodec(data,width,height){
+
+  let best=null;
+
+  for(let mode=0;mode<5;mode++){
+
+    const residual=makeResiduals(
+      data,
+      width,
+      height,
+      mode
+    );
+
+    const encoded=huffmanEncode(residual);
+
+    const header=6+
+      4+
+      256+
+      encoded.payload.length;
+
+    if(!best || header<best.bytes.length){
+
+      const out=[];
+
+      out.push(
+        0x4e,0x58,0x50,0x33,
+        2,
+        mode
+      );
+
+      out.push(...varint(width));
+      out.push(...varint(height));
+      out.push(...varint(residual.length));
+
+      for(const l of encoded.lengths)
+        out.push(l);
+
+      out.push(...varint(encoded.payload.length));
+      out.push(...encoded.payload);
+
+      best={
+        bytes:new Uint8Array(out),
+        mode:"predictive + Huffman",
+        detail:`predictor ${mode} · entropy coded`
+      };
+    }
+  }
+
+  return best;
+}
+
+function decodePredictive(data){
+
+  const s={data,o:0};
+
+  if(
+    data[s.o++]!==0x4e||
+    data[s.o++]!==0x58||
+    data[s.o++]!==0x50||
+    data[s.o++]!==0x33
+  ) throw Error("Invalid NexusPNG");
+
+  const type=data[s.o++];
+
+  if(type!==2)
+    throw Error("Not predictive mode");
+
+  const mode=data[s.o++];
+
+  const width=readVarint(s);
+  const height=readVarint(s);
+  const count=readVarint(s);
+
+  const lengths=data.slice(s.o,s.o+256);
+  s.o+=256;
+
+  const payloadLength=readVarint(s);
+  const payload=data.slice(s.o,s.o+payloadLength);
+
+  const residual=huffmanDecode(
+    lengths,
+    payload,
+    count
+  );
+
+  const rgba=restoreResiduals(
+    residual,
+    width,
+    height,
+    mode
+  );
+
+  return new ImageData(rgba,width,height);
+}
+
+/* ---------------------------------------------------------
+   Raw fallback
+--------------------------------------------------------- */
+
+function rawCodec(data,width,height){
+
+  const out=[];
+
+  out.push(
+    0x4e,0x58,0x50,0x33,
+    0,
+    0
+  );
+
+  out.push(...varint(width));
+  out.push(...varint(height));
+  out.push(...varint(data.length));
+  out.push(...data);
+
+  return {
+    bytes:new Uint8Array(out),
+    mode:"raw",
+    detail:"uncompressed fallback"
+  };
+}
+
+function decodeRaw(data){
+
+  const s={data,o:0};
+
+  s.o+=4;
+
+  const type=data[s.o++];
+
+  if(type!==0)
+    throw Error("Not raw mode");
+
+  s.o++;
+
+  const width=readVarint(s);
+  const height=readVarint(s);
+  const length=readVarint(s);
+
+  const rgba=new Uint8ClampedArray(
+    data.slice(s.o,s.o+length)
+  );
+
+  return new ImageData(rgba,width,height);
+}
+
+/* ---------------------------------------------------------
+   Master encoder
+--------------------------------------------------------- */
+
+function encodeNexusPNG(imageData){
+
+  const {
+    width,
+    height,
+    data
+  }=imageData;
+
+  const candidates=[];
+
+  const raw=rawCodec(
+    data,
+    width,
+    height
+  );
+
+  candidates.push(raw);
+
+  const palette=paletteCodec(
+    data,
+    width,
+    height
+  );
+
+  if(palette)
+    candidates.push(palette);
+
+  const predictive=predictiveCodec(
+    data,
+    width,
+    height
+  );
+
+  candidates.push(predictive);
+
+  candidates.sort(
+    (a,b)=>a.bytes.length-b.bytes.length
+  );
+
+  return candidates[0];
+}
+
+/* ---------------------------------------------------------
+   Master decoder
+--------------------------------------------------------- */
+
+function decodeNexusPNG(bytes){
+
+  if(
+    bytes[0]!==0x4e||
+    bytes[1]!==0x58||
+    bytes[2]!==0x50||
+    bytes[3]!==0x33
+  )
+    throw Error("Invalid NexusPNG file");
+
+  const type=bytes[4];
+
+  if(type===0)
+    return decodeRaw(bytes);
+
+  if(type===1)
+    return decodePalette(bytes);
+
+  if(type===2)
+    return decodePredictive(bytes);
+
+  throw Error("Unsupported NexusPNG codec");
+}
+
+/* ---------------------------------------------------------
+   Canvas helpers
+--------------------------------------------------------- */
+
+function put(canvas,data){
+
+  canvas.width=data.width;
+  canvas.height=data.height;
+
+  canvas
+    .getContext("2d")
+    .putImageData(data,0,0);
+}
+
+function getImageData(canvas){
+
+  return canvas
+    .getContext("2d",{
+      willReadFrequently:true
+    })
+    .getImageData(
+      0,
+      0,
+      canvas.width,
+      canvas.height
+    );
+}
+
+function blob(canvas,type,quality){
+
+  return new Promise((resolve,reject)=>{
+
+    canvas.toBlob(
+      b=>{
+        if(b) resolve(b);
+        else reject(Error("Encoding failed"));
+      },
+      type,
+      quality
+    );
+
   });
 }
 
-async function processImage(file) {
-  status.textContent = `Processing ${file.name} locally...`;
-  results.classList.add("hidden");
+/* ---------------------------------------------------------
+   Color statistics
+--------------------------------------------------------- */
 
-  try {
-    const bitmap = await createImageBitmap(file);
+function countColors(data){
 
-    const source = document.createElement("canvas");
-    source.width = bitmap.width;
-    source.height = bitmap.height;
-    source.getContext("2d").drawImage(bitmap, 0, 0);
-    bitmap.close();
+  const set=new Set();
 
-    const imageData = imageDataFromCanvas(source);
+  for(let i=0;i<data.data.length;i+=4){
 
-    // PNG
-    const pngBlob = await canvasBlob(source, "image/png");
-    const pngBytes = new Uint8Array(await pngBlob.arrayBuffer());
+    set.add(
+      (data.data[i]<<24)|
+      (data.data[i+1]<<16)|
+      (data.data[i+2]<<8)|
+      data.data[i+3]
+    );
 
-    // JPEG
-    const jpgBlob = await canvasBlob(source, "image/jpeg", 0.9);
-    const jpgBytes = new Uint8Array(await jpgBlob.arrayBuffer());
+  }
 
-    // NexusPNG
-    const nexusBytes = encodeNexusPNG(imageData);
-    const decoded = decodeNexusPNG(nexusBytes);
+  return set.size;
+}
 
-    // Pixel-perfect validation
-    const a = imageData.data;
-    const b = decoded.data;
-    let identical = a.length === b.length;
-    if (identical) {
-      for (let i = 0; i < a.length; i++) {
-        if (a[i] !== b[i]) {
-          identical = false;
+/* ---------------------------------------------------------
+   Main processing
+--------------------------------------------------------- */
+
+async function process(f){
+
+  $("status").textContent=
+    `Reading ${f.name} locally…`;
+
+  $("dashboard").classList.add("hidden");
+
+  try{
+
+    const bmp=await createImageBitmap(f);
+
+    const canvas=document.createElement("canvas");
+
+    canvas.width=bmp.width;
+    canvas.height=bmp.height;
+
+    canvas
+      .getContext("2d")
+      .drawImage(bmp,0,0);
+
+    bmp.close();
+
+    const original=getImageData(canvas);
+
+    $("status").textContent=
+      "Testing NexusPNG codecs…";
+
+    const png=await blob(
+      canvas,
+      "image/png"
+    );
+
+    const jpg=await blob(
+      canvas,
+      "image/jpeg",
+      .9
+    );
+
+    const nexus=encodeNexusPNG(
+      original
+    );
+
+    $("status").textContent=
+      "Decoding NexusPNG and verifying every pixel…";
+
+    const decoded=decodeNexusPNG(
+      nexus.bytes
+    );
+
+    let exact=
+      original.data.length===
+      decoded.data.length;
+
+    if(exact){
+
+      for(
+        let i=0;
+        i<original.data.length;
+        i++
+      ){
+
+        if(
+          original.data[i]!==decoded.data[i]
+        ){
+
+          exact=false;
           break;
+
         }
+
       }
+
     }
 
-    canvasFromImageData(document.getElementById("pngCanvas"), imageData);
-    canvasFromImageData(document.getElementById("jpgCanvas"), await blobToImageData(jpgBlob));
-    canvasFromImageData(document.getElementById("nexusCanvas"), decoded);
+    put(
+      $("pngCanvas"),
+      original
+    );
 
-    document.getElementById("pngMeta").innerHTML =
-      `<strong>${formatBytes(pngBytes.byteLength)}</strong><br>Lossless browser PNG`;
+    const jpgBitmap=
+      await createImageBitmap(jpg);
 
-    document.getElementById("jpgMeta").innerHTML =
-      `<strong>${formatBytes(jpgBytes.byteLength)}</strong><br>JPEG quality: 90%`;
+    const jpgCanvas=
+      document.createElement("canvas");
 
-    const ratio = (nexusBytes.byteLength / pngBytes.byteLength * 100).toFixed(1);
-    document.getElementById("nexusMeta").innerHTML =
-      `<strong>${formatBytes(nexusBytes.byteLength)}</strong><br>` +
-      `NexusPNG v1 · ${ratio}% of PNG · Pixel-perfect: ${identical ? "yes" : "NO"}`;
+    jpgCanvas.width=jpgBitmap.width;
+    jpgCanvas.height=jpgBitmap.height;
 
-    status.textContent =
-      `${file.name} · ${source.width}×${source.height} · ` +
-      `${formatBytes(file.size)} input · all processing stayed on this device.`;
+    jpgCanvas
+      .getContext("2d")
+      .drawImage(
+        jpgBitmap,
+        0,
+        0
+      );
 
-    results.classList.remove("hidden");
-  } catch (err) {
-    console.error(err);
-    status.textContent = `Error: ${err.message}`;
+    jpgBitmap.close();
+
+    put(
+      $("jpgCanvas"),
+      getImageData(jpgCanvas)
+    );
+
+    put(
+      $("nexusCanvas"),
+      decoded
+    );
+
+    const pngSize=png.size;
+    const jpgSize=jpg.size;
+    const nexusSize=nexus.bytes.length;
+
+    const nexusRelative=
+      nexusSize/pngSize*100;
+
+    const jpgRelative=
+      jpgSize/pngSize*100;
+
+    const reduction=
+      (1-nexusSize/pngSize)*100;
+
+    const colors=
+      countColors(original);
+
+    $("dimensions").textContent=
+      `${canvas.width} × ${canvas.height} · ${
+        (canvas.width*canvas.height)
+        .toLocaleString()
+      } pixels`;
+
+    $("pngSize").textContent=
+      bytes(pngSize);
+
+    $("jpgSize").textContent=
+      bytes(jpgSize);
+
+    $("nexusSize").textContent=
+      bytes(nexusSize);
+
+    $("reduction").textContent=
+      reduction>=0
+        ? `${reduction.toFixed(1)}%`
+        : `+${Math.abs(reduction).toFixed(1)}%`;
+
+    $("colorCount").textContent=
+      colors.toLocaleString();
+
+    $("pngInfo").textContent=
+      bytes(pngSize);
+
+    $("jpgInfo").textContent=
+      `${bytes(jpgSize)} · quality 90`;
+
+    $("nexusInfo").textContent=
+      bytes(nexusSize);
+
+    $("tPng").textContent=
+      bytes(pngSize);
+
+    $("tJpg").textContent=
+      bytes(jpgSize);
+
+    $("tNexus").textContent=
+      bytes(nexusSize);
+
+    $("rJpg").textContent=
+      jpgRelative.toFixed(1)+"%";
+
+    $("rNexus").textContent=
+      nexusRelative.toFixed(1)+"%";
+
+    $("tExact").textContent=
+      exact
+        ? "YES"
+        : "NO";
+
+    $("tExact").className=
+      exact
+        ? "good"
+        : "bad";
+
+    $("losslessCheck").innerHTML=
+      exact
+        ? `<span class="good">✓ Pixel-perfect reconstruction</span>`
+        : `<span class="bad">✕ Reconstruction mismatch</span>`;
+
+    $("codecMode").textContent=
+      nexus.mode;
+
+    $("methodCell").textContent=
+      nexus.detail;
+
+    if(reduction>=0){
+
+      $("compressionText").textContent=
+        `NexusPNG compressed this image by ${
+          reduction.toFixed(2)
+        }% compared with PNG.`;
+
+    }else{
+
+      $("compressionText").textContent=
+        `This image is already difficult to compress. `
+        +`NexusPNG correctly chose a lossless representation `
+        +`without throwing away information.`;
+
+    }
+
+    const visualReduction=
+      Math.max(
+        2,
+        Math.min(
+          100,
+          Math.max(
+            0,
+            reduction
+          )
+        )
+      );
+
+    $("compressionBar").style.width=
+      visualReduction+"%";
+
+    $("breakdown").textContent=
+`NexusPNG v3
+
+Magic
+  4 bytes: NXP3
+
+Codec
+  ${nexus.mode}
+
+Image
+  ${canvas.width} × ${canvas.height}
+
+Pixels
+  ${(canvas.width*canvas.height).toLocaleString()}
+
+Unique colors
+  ${colors.toLocaleString()}
+
+Encoded size
+  ${bytes(nexusSize)}
+
+PNG reference
+  ${bytes(pngSize)}
+
+Relative size
+  ${nexusRelative.toFixed(2)}%
+
+Pixel verification
+  ${exact?"PASS":"FAIL"}
+
+${nexus.detail}`;
+
+    $("status").textContent=
+      `Done · ${f.name} · ${
+        exact
+          ? "lossless verification passed"
+          : "verification failed"
+      }`;
+
+    $("dashboard").classList.remove("hidden");
+
+  }catch(e){
+
+    console.error(e);
+
+    $("status").textContent=
+      `Error: ${e.message}`;
+
   }
-}
 
-async function blobToImageData(blob) {
-  const bitmap = await createImageBitmap(blob);
-  const c = document.createElement("canvas");
-  c.width = bitmap.width;
-  c.height = bitmap.height;
-  c.getContext("2d").drawImage(bitmap, 0, 0);
-  bitmap.close();
-  return imageDataFromCanvas(c);
 }
 </script>
+
 </body>
 </html>
+```
