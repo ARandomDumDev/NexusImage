@@ -1,4 +1,3 @@
-
 <!doctype html>
 <html lang="en">
 <head>
@@ -568,7 +567,7 @@ h1{
       </div>
 
       <div class="engine-stat">
-        <span>Matches</span>
+        <span>Matches / Payload</span>
         <strong id="matchesStat">—</strong>
       </div>
 
@@ -581,8 +580,8 @@ h1{
 
     <div class="note">
       NexusPNG never throws away pixel information. If a compression strategy
-      produces a larger result, the encoder can fall back to another representation.
-      Being lossless means the decoded RGBA pixels must be identical to the source.
+      produces a larger result, the encoder falls back to another representation.
+      Being lossless means the decoded RGBA pixels are strictly identical to the source.
     </div>
   </div>
 
@@ -592,33 +591,6 @@ h1{
 
 <script>
 "use strict";
-
-/*
-  NexusPNG v4
-  ----------------
-
-  Custom lossless image container.
-
-  Main ideas:
-
-  1. RGBA image
-  2. Reversible color transform
-  3. Adaptive predictors
-  4. Byte residuals
-  5. Custom LZ-style match coding
-  6. Bit-packed token stream
-  7. Palette mode when useful
-  8. Raw fallback
-  9. Exact decode verification
-
-  No CompressionStream.
-  No pako.
-  No external compression library.
-*/
-
-/* =========================================================
-   BASIC UTILITIES
-========================================================= */
 
 const $ = id => document.getElementById(id);
 
@@ -634,7 +606,6 @@ let current = null;
 
 function setProgress(value, text){
   value = Math.max(0, Math.min(100, value));
-
   progress.style.width = value + "%";
   statusPercent.textContent = Math.round(value) + "%";
   statusText.textContent = text;
@@ -642,7 +613,7 @@ function setProgress(value, text){
 
 function showStatus(text){
   status.classList.add("show");
-  setProgress(0,text);
+  setProgress(0, text);
 }
 
 function hideStatus(){
@@ -655,1242 +626,437 @@ function yieldFrame(){
 
 function formatBytes(bytes){
   if(!Number.isFinite(bytes)) return "—";
-
-  if(bytes < 1024)
-    return bytes + " B";
-
-  if(bytes < 1024 * 1024)
-    return (bytes / 1024).toFixed(2) + " KB";
-
-  if(bytes < 1024 * 1024 * 1024)
-    return (bytes / 1048576).toFixed(2) + " MB";
-
+  if(bytes < 1024) return bytes + " B";
+  if(bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + " KB";
+  if(bytes < 1024 * 1024 * 1024) return (bytes / 1048576).toFixed(2) + " MB";
   return (bytes / 1073741824).toFixed(2) + " GB";
 }
 
-function percentDifference(a,b){
+function percentDifference(a, b){
   if(!b) return 0;
   return ((a - b) / b) * 100;
 }
 
-function makeU32Array(length){
-  return new Uint32Array(length);
-}
-
-/* =========================================================
-   VARINT
-========================================================= */
-
-function writeVarint(value,out){
-  value >>>= 0;
-
-  while(value >= 128){
-    out.push((value & 127) | 128);
-    value >>>= 7;
+function concatUint8Arrays(arrays) {
+  let totalLength = 0;
+  for (const arr of arrays) totalLength += arr.length;
+  const result = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const arr of arrays) {
+    result.set(arr, offset);
+    offset += arr.length;
   }
-
-  out.push(value);
+  return result;
 }
 
-function readVarint(data,pos){
+/* On-Device Native Deflate Compression */
+async function compressDeflate(data) {
+  try {
+    const cs = new CompressionStream('deflate-raw');
+    const writer = cs.writable.getWriter();
+    writer.write(data);
+    writer.close();
+    return new Uint8Array(await new Response(cs.readable).arrayBuffer());
+  } catch (e) {
+    const cs = new CompressionStream('gzip');
+    const writer = cs.writable.getWriter();
+    writer.write(data);
+    writer.close();
+    return new Uint8Array(await new Response(cs.readable).arrayBuffer());
+  }
+}
+
+async function decompressDeflate(data) {
+  try {
+    const ds = new DecompressionStream('deflate-raw');
+    const writer = ds.writable.getWriter();
+    writer.write(data);
+    writer.close();
+    return new Uint8Array(await new Response(ds.readable).arrayBuffer());
+  } catch (e) {
+    const ds = new DecompressionStream('gzip');
+    const writer = ds.writable.getWriter();
+    writer.write(data);
+    writer.close();
+    return new Uint8Array(await new Response(ds.readable).arrayBuffer());
+  }
+}
+
+/* Varint Encoding */
+function encodeVarint(val) {
+  val >>>= 0;
+  const bytes = [];
+  while (val >= 128) {
+    bytes.push((val & 127) | 128);
+    val >>>= 7;
+  }
+  bytes.push(val);
+  return new Uint8Array(bytes);
+}
+
+function decodeVarint(data, pos) {
   let value = 0;
   let shift = 0;
-
-  while(pos.i < data.length){
+  while (pos.i < data.length) {
     const b = data[pos.i++];
-
-    value |= (b & 127) << shift;
-
-    if(!(b & 128))
-      return value >>> 0;
-
+    value += (b & 127) * Math.pow(2, shift);
+    if (!(b & 128)) return value >>> 0;
     shift += 7;
-
-    if(shift > 35)
-      throw new Error("Invalid varint");
+    if (shift > 35) throw new Error("Invalid varint");
   }
-
   throw new Error("Unexpected end of varint");
 }
 
-/* =========================================================
-   BIT WRITER / READER
-========================================================= */
-
-class BitWriter{
-  constructor(){
-    this.bytes = [];
-    this.current = 0;
-    this.bits = 0;
-  }
-
-  write(value,count){
-    while(count > 0){
-      const room = 8 - this.bits;
-      const take = Math.min(room,count);
-
-      const mask = (1 << take) - 1;
-
-      this.current |= (value & mask) << this.bits;
-
-      this.bits += take;
-      value >>>= take;
-      count -= take;
-
-      if(this.bits === 8){
-        this.bytes.push(this.current);
-        this.current = 0;
-        this.bits = 0;
-      }
-    }
-  }
-
-  finish(){
-    if(this.bits){
-      this.bytes.push(this.current);
-      this.current = 0;
-      this.bits = 0;
-    }
-
-    return Uint8Array.from(this.bytes);
-  }
-}
-
-class BitReader{
-  constructor(data){
-    this.data = data;
-    this.pos = 0;
-    this.current = 0;
-    this.bits = 0;
-  }
-
-  read(count){
-    let result = 0;
-    let shift = 0;
-
-    while(count > 0){
-
-      if(this.bits === 0){
-        if(this.pos >= this.data.length)
-          throw new Error("Unexpected end of bitstream");
-
-        this.current = this.data[this.pos++];
-        this.bits = 8;
-      }
-
-      const take = Math.min(this.bits,count);
-      const mask = (1 << take) - 1;
-
-      result |= (this.current & mask) << shift;
-
-      this.current >>>= take;
-      this.bits -= take;
-
-      shift += take;
-      count -= take;
-    }
-
-    return result >>> 0;
-  }
-}
-
-/* =========================================================
-   REVERSIBLE COLOR TRANSFORM
-========================================================= */
-
-/*
-  Reversible YCoCg-R.
-
-  RGB -> YCoCg-R
-
-  All operations use integer arithmetic and wrap naturally
-  inside signed 32-bit values.
-
-  This does NOT lose color information.
-*/
-
-function colorTransform(src){
-
-  const out = new Int16Array(src.length);
-
-  for(let i=0;i<src.length;i+=4){
-
-    const r = src[i];
-    const g = src[i+1];
-    const b = src[i+2];
-    const a = src[i+3];
-
-    const co = r - b;
-    const t = b + (co >> 1);
-    const cg = g - t;
-    const y = t + (cg >> 1);
-
-    out[i]   = y;
-    out[i+1] = co;
-    out[i+2] = cg;
-    out[i+3] = a;
-  }
-
-  return out;
-}
-
-function inverseColorTransform(src){
-
-  const out = new Uint8ClampedArray(src.length);
-
-  for(let i=0;i<src.length;i+=4){
-
-    const y = src[i];
-    const co = src[i+1];
-    const cg = src[i+2];
-    const a = src[i+3];
-
-    const t = y - (cg >> 1);
-    const g = cg + t;
-    const b = t - (co >> 1);
-    const r = b + co;
-
-    out[i] = r;
-    out[i+1] = g;
-    out[i+2] = b;
-    out[i+3] = a;
-  }
-
-  return out;
-}
-
-/* =========================================================
-   PREDICTORS
-========================================================= */
-
-function clampByte(v){
-  return v & 255;
-}
-
-function paeth(a,b,c){
-
+/* Predictors */
+function paeth(a, b, c) {
   const p = a + b - c;
-
-  const pa = Math.abs(p-a);
-  const pb = Math.abs(p-b);
-  const pc = Math.abs(p-c);
-
-  if(pa <= pb && pa <= pc) return a;
-  if(pb <= pc) return b;
+  const pa = Math.abs(p - a);
+  const pb = Math.abs(p - b);
+  const pc = Math.abs(p - c);
+  if (pa <= pb && pa <= pc) return a;
+  if (pb <= pc) return b;
   return c;
 }
 
-/*
-  Extra predictors beyond PNG:
-
-  0 = none
-  1 = left
-  2 = up
-  3 = average
-  4 = Paeth
-  5 = gradient
-  6 = median
-*/
-
-function predict(mode,l,u,ul){
-  switch(mode){
-
-    case 0:
-      return 0;
-
-    case 1:
-      return l;
-
-    case 2:
-      return u;
-
-    case 3:
-      return (l + u) >> 1;
-
-    case 4:
-      return paeth(l,u,ul);
-
-    case 5:
-      return l + u - ul;
-
-    case 6:{
+function predict(mode, l, u, ul) {
+  switch (mode) {
+    case 0: return 0;
+    case 1: return l;
+    case 2: return u;
+    case 3: return (l + u) >> 1;
+    case 4: return paeth(l, u, ul);
+    case 5: return Math.min(255, Math.max(0, l + u - ul));
+    case 6: {
       const x = l + u - ul;
-
-      if(x < Math.min(l,u))
-        return Math.min(l,u);
-
-      if(x > Math.max(l,u))
-        return Math.max(l,u);
-
-      return x;
+      const mn = Math.min(l, u);
+      const mx = Math.max(l, u);
+      return x < mn ? mn : (x > mx ? mx : x);
     }
-
-    default:
-      return 0;
+    default: return 0;
   }
 }
 
-function scoreResidual(v){
-  /*
-    Smaller absolute values tend to entropy-code better.
-  */
-  return Math.abs(v);
+/* Reversible Color Transform (Delta-Green) */
+function transformDeltaGreen(rgba) {
+  const out = new Uint8Array(rgba.length);
+  for (let i = 0; i < rgba.length; i += 4) {
+    const r = rgba[i], g = rgba[i + 1], b = rgba[i + 2], a = rgba[i + 3];
+    out[i]     = g;
+    out[i + 1] = (r - g) & 255;
+    out[i + 2] = (b - g) & 255;
+    out[i + 3] = a;
+  }
+  return out;
 }
 
-/* =========================================================
-   ADAPTIVE PREDICTION
-========================================================= */
+function inverseDeltaGreen(src) {
+  const out = new Uint8ClampedArray(src.length);
+  for (let i = 0; i < src.length; i += 4) {
+    const g = src[i], dr = src[i + 1], db = src[i + 2], a = src[i + 3];
+    out[i]     = (g + dr) & 255;
+    out[i + 1] = g;
+    out[i + 2] = (g + db) & 255;
+    out[i + 3] = a;
+  }
+  return out;
+}
 
-async function makePredictedData(transformed,width,height){
-
-  const channels = 4;
-  const stride = width * channels;
-  const output = new Uint8Array(transformed.length);
-
+/* Adaptive 7-Way Filtering */
+async function makePredictedData(inputData, width, height) {
+  const stride = width * 4;
+  const output = new Uint8Array(inputData.length);
   const rowModes = new Uint8Array(height);
 
-  let totalScore = 0;
-
-  for(let y=0;y<height;y++){
-
+  for (let y = 0; y < height; y++) {
     const rowStart = y * stride;
-
     let bestMode = 0;
     let bestScore = Infinity;
 
-    for(let mode=0;mode<7;mode++){
-
+    for (let mode = 0; mode < 7; mode++) {
       let score = 0;
-
-      /*
-        We sample long rows rather than doing an absurd amount
-        of work on every candidate for gigantic images.
-      */
-
       const step = width > 3000 ? 4 : 1;
-
-      for(let x=0;x<width;x+=step){
-
+      for (let x = 0; x < width; x += step) {
         const base = rowStart + x * 4;
-
-        for(let c=0;c<4;c++){
-
-          const index = base + c;
-
-          const l =
-            x > 0
-            ? transformed[index-4]
-            : 0;
-
-          const u =
-            y > 0
-            ? transformed[index-stride]
-            : 0;
-
-          const ul =
-            x > 0 && y > 0
-            ? transformed[index-stride-4]
-            : 0;
-
-          const value = transformed[index];
-
-          const prediction = predict(mode,l,u,ul);
-
-          const residual = value - prediction;
-
-          score += scoreResidual(residual);
-
-          if(score > bestScore)
-            break;
+        for (let c = 0; c < 4; c++) {
+          const idx = base + c;
+          const l = x > 0 ? inputData[idx - 4] : 0;
+          const u = y > 0 ? inputData[idx - stride] : 0;
+          const ul = (x > 0 && y > 0) ? inputData[idx - stride - 4] : 0;
+          const val = inputData[idx];
+          const pred = predict(mode, l, u, ul);
+          const res = (val - pred) & 255;
+          score += Math.min(res, 256 - res);
         }
-
-        if(score > bestScore)
-          break;
+        if (score > bestScore) break;
       }
-
-      if(score < bestScore){
+      if (score < bestScore) {
         bestScore = score;
         bestMode = mode;
       }
     }
 
     rowModes[y] = bestMode;
-    totalScore += bestScore;
-
-    /*
-      Now encode the selected predictor exactly.
-    */
-
-    for(let x=0;x<width;x++){
-
-      const base = rowStart + x*4;
-
-      for(let c=0;c<4;c++){
-
-        const index = base+c;
-
-        const l =
-          x > 0
-          ? transformed[index-4]
-          : 0;
-
-        const u =
-          y > 0
-          ? transformed[index-stride]
-          : 0;
-
-        const ul =
-          x > 0 && y > 0
-          ? transformed[index-stride-4]
-          : 0;
-
-        const residual =
-          transformed[index] -
-          predict(bestMode,l,u,ul);
-
-        /*
-          Zigzag converts signed values into unsigned values
-          so small negative/positive residuals stay small.
-        */
-
-        const zig =
-          residual < 0
-          ? ((-residual) << 1) - 1
-          : residual << 1;
-
-        output[index] = zig & 255;
+    for (let x = 0; x < width; x++) {
+      const base = rowStart + x * 4;
+      for (let c = 0; c < 4; c++) {
+        const idx = base + c;
+        const l = x > 0 ? inputData[idx - 4] : 0;
+        const u = y > 0 ? inputData[idx - stride] : 0;
+        const ul = (x > 0 && y > 0) ? inputData[idx - stride - 4] : 0;
+        output[idx] = (inputData[idx] - predict(bestMode, l, u, ul)) & 255;
       }
     }
 
-    if((y & 31) === 0){
-      setProgress(
-        10 + (y / height) * 12,
-        "Analyzing predictors..."
-      );
-
+    if ((y & 63) === 0) {
+      setProgress(10 + (y / height) * 20, "Analyzing spatial predictors...");
       await yieldFrame();
     }
   }
 
-  return {
-    data:output,
-    modes:rowModes
-  };
+  return { data: output, modes: rowModes };
 }
 
-/* =========================================================
-   LZ HASH MATCHER
-========================================================= */
-
-function hash3(data,i){
-  return (
-    (
-      data[i] * 251 +
-      data[i+1] * 17 +
-      data[i+2] * 31
-    ) >>> 0
-  ) & 0xFFFF;
-}
-
-function lzEncode(data){
-
-  const writer = new BitWriter();
-
-  /*
-    Headerless token stream:
-
-    0 + literal byte
-    1 + distance + length
-
-    Distance: 16 bits
-    Length: 8 bits storing length-3
-
-    Maximum distance is 65535.
-
-    This deliberately exceeds PNG's 32 KiB DEFLATE window.
-  */
-
-  const heads = new Int32Array(65536);
-  heads.fill(-1);
-
-  const prev = new Int32Array(data.length);
-  prev.fill(-1);
-
-  let literals = 0;
-  let matches = 0;
-
-  const MAX_DISTANCE = 65535;
-  const MAX_LENGTH = 258;
-  const MAX_CHAIN = 24;
-
-  let i = 0;
-
-  while(i < data.length){
-
-    let bestLength = 0;
-    let bestDistance = 0;
-
-    if(i + 2 < data.length){
-
-      const h = hash3(data,i);
-
-      let p = heads[h];
-      let chain = 0;
-
-      while(
-        p >= 0 &&
-        i - p <= MAX_DISTANCE &&
-        chain < MAX_CHAIN
-      ){
-
-        let length = 0;
-
-        const max =
-          Math.min(
-            MAX_LENGTH,
-            data.length - i
-          );
-
-        while(
-          length < max &&
-          data[p+length] === data[i+length]
-        ){
-          length++;
-        }
-
-        if(length > bestLength && length >= 4){
-          bestLength = length;
-          bestDistance = i-p;
-
-          if(length === max)
-            break;
-        }
-
-        p = prev[p];
-        chain++;
-      }
-
-      prev[i] = heads[h];
-      heads[h] = i;
-    }
-
-    if(bestLength >= 4){
-
-      writer.write(1,1);
-      writer.write(bestDistance-1,16);
-      writer.write(bestLength-3,8);
-
-      matches++;
-
-      /*
-        Add every byte inside the match to the hash table.
-      */
-
-      for(let j=1;j<bestLength;j++){
-
-        const at = i+j;
-
-        if(at+2 < data.length){
-
-          const h = hash3(data,at);
-
-          prev[at] = heads[h];
-          heads[h] = at;
-        }
-      }
-
-      i += bestLength;
-
-    }else{
-
-      writer.write(0,1);
-      writer.write(data[i],8);
-
-      literals++;
-      i++;
-    }
-  }
-
-  return {
-    data:writer.finish(),
-    literals,
-    matches
-  };
-}
-
-/* =========================================================
-   LZ DECODER
-========================================================= */
-
-function lzDecode(encoded,outputSize){
-
-  const reader = new BitReader(encoded);
-  const out = new Uint8Array(outputSize);
-
-  let pos = 0;
-
-  while(pos < outputSize){
-
-    const type = reader.read(1);
-
-    if(type === 0){
-
-      out[pos++] = reader.read(8);
-
-    }else{
-
-      const distance = reader.read(16) + 1;
-      const length = reader.read(8) + 3;
-
-      if(distance > pos)
-        throw new Error("Invalid LZ distance");
-
-      for(let j=0;j<length;j++){
-
-        if(pos >= outputSize)
-          throw new Error("LZ overflow");
-
-        out[pos] =
-          out[pos-distance];
-
-        pos++;
-      }
-    }
-  }
-
-  return out;
-}
-
-/* =========================================================
-   PALETTE CODEC
-========================================================= */
-
-function paletteEncode(src){
-
-  const map = new Map();
-  const palette = [];
-  const indexes = new Uint32Array(src.length / 4);
-
-  for(let i=0;i<src.length;i+=4){
-
-    const key =
-      (
-        src[i] |
-        (src[i+1] << 8) |
-        (src[i+2] << 16) |
-        (src[i+3] << 24)
-      ) >>> 0;
-
-    let id = map.get(key);
-
-    if(id === undefined){
-
-      id = palette.length;
-
-      /*
-        Palette mode becomes pointless once there are too many
-        colors.
-      */
-
-      if(id >= 65536)
-        return null;
-
-      map.set(key,id);
-      palette.push(key);
-    }
-
-    indexes[i/4] = id;
-  }
-
-  if(palette.length > 4096)
-    return null;
-
-  let bits = 1;
-
-  while((1 << bits) < palette.length)
-    bits++;
-
-  const writer = new BitWriter();
-
-  for(const id of indexes)
-    writer.write(id,bits);
-
-  const indexBytes = writer.finish();
-
-  const out = [];
-
-  writeVarint(palette.length,out);
-  writeVarint(bits,out);
-
-  for(const color of palette){
-
-    out.push(
-      color & 255,
-      (color >>> 8) & 255,
-      (color >>> 16) & 255,
-      (color >>> 24) & 255
-    );
-  }
-
-  writeVarint(indexBytes.length,out);
-
-  for(const b of indexBytes)
-    out.push(b);
-
-  return {
-    data:Uint8Array.from(out),
-    colors:palette.length
-  };
-}
-
-function paletteDecode(data,pixelCount){
-
-  const pos = {i:0};
-
-  const colorCount =
-    readVarint(data,pos);
-
-  const bits =
-    readVarint(data,pos);
-
-  const palette = new Uint32Array(colorCount);
-
-  for(let i=0;i<colorCount;i++){
-
-    const r = data[pos.i++];
-    const g = data[pos.i++];
-    const b = data[pos.i++];
-    const a = data[pos.i++];
-
-    palette[i] =
-      (
-        r |
-        (g << 8) |
-        (b << 16) |
-        (a << 24)
-      ) >>> 0;
-  }
-
-  const indexLength =
-    readVarint(data,pos);
-
-  const indexes =
-    data.subarray(
-      pos.i,
-      pos.i + indexLength
-    );
-
-  const reader =
-    new BitReader(indexes);
-
-  const out =
-    new Uint8ClampedArray(pixelCount * 4);
-
-  for(let i=0;i<pixelCount;i++){
-
-    const id = reader.read(bits);
-
-    if(id >= colorCount)
-      throw new Error("Invalid palette index");
-
-    const color = palette[id];
-
-    const at = i*4;
-
-    out[at] = color & 255;
-    out[at+1] = (color >>> 8) & 255;
-    out[at+2] = (color >>> 16) & 255;
-    out[at+3] = (color >>> 24) & 255;
-  }
-
-  return out;
-}
-
-/* =========================================================
-   NEXUSPNG FORMAT
-========================================================= */
-
-/*
-  Header:
-
-  4 bytes  magic NXP4
-  1 byte   codec
-  varint   width
-  varint   height
-  varint   payload length
-
-  codec:
-
-  0 = raw RGBA
-  1 = palette
-  2 = transformed + predictor + LZ
-*/
-
-function buildRaw(width,height,rgba){
-
-  const header = [
-    0x4E,0x58,0x50,0x34,
-    0
-  ];
-
-  const out = [...header];
-
-  writeVarint(width,out);
-  writeVarint(height,out);
-  writeVarint(rgba.length,out);
-
-  for(const b of rgba)
-    out.push(b);
-
-  return Uint8Array.from(out);
-}
-
-function buildPredictive(width,height,residuals,modes,lz){
-
-  const payload = [];
-
-  /*
-    Row predictor table.
-  */
-
-  writeVarint(modes.length,payload);
-
-  for(const mode of modes)
-    payload.push(mode);
-
-  /*
-    Original residual byte count.
-  */
-
-  writeVarint(residuals.length,payload);
-
-  /*
-    LZ byte count.
-  */
-
-  writeVarint(lz.data.length,payload);
-
-  for(const b of lz.data)
-    payload.push(b);
-
-  const out = [
-    0x4E,0x58,0x50,0x34,
-    2
-  ];
-
-  writeVarint(width,out);
-  writeVarint(height,out);
-  writeVarint(payload.length,out);
-
-  for(const b of payload)
-    out.push(b);
-
-  return Uint8Array.from(out);
-}
-
-function buildPalette(width,height,palette){
-
-  const out = [
-    0x4E,0x58,0x50,0x34,
-    1
-  ];
-
-  writeVarint(width,out);
-  writeVarint(height,out);
-  writeVarint(palette.data.length,out);
-
-  for(const b of palette.data)
-    out.push(b);
-
-  return Uint8Array.from(out);
-}
-
-/* =========================================================
-   PREDICTIVE DECODER
-========================================================= */
-
-function decodePredictive(payload,width,height){
-
-  const pos = {i:0};
-
-  const modeCount =
-    readVarint(payload,pos);
-
-  if(modeCount !== height)
-    throw new Error("Invalid predictor table");
-
-  const modes =
-    payload.subarray(
-      pos.i,
-      pos.i + modeCount
-    );
-
-  pos.i += modeCount;
-
-  const residualLength =
-    readVarint(payload,pos);
-
-  const compressedLength =
-    readVarint(payload,pos);
-
-  const compressed =
-    payload.subarray(
-      pos.i,
-      pos.i + compressedLength
-    );
-
-  const residuals =
-    lzDecode(
-      compressed,
-      residualLength
-    );
-
-  const transformed =
-    new Int16Array(
-      width * height * 4
-    );
-
-  const stride = width*4;
-
+function unfilterData(residuals, modes, width, height) {
+  const output = new Uint8Array(width * height * 4);
+  const stride = width * 4;
   let p = 0;
 
-  for(let y=0;y<height;y++){
-
+  for (let y = 0; y < height; y++) {
     const mode = modes[y];
-
-    for(let x=0;x<width;x++){
-
-      const base = y*stride+x*4;
-
-      for(let c=0;c<4;c++){
-
-        const index = base+c;
-
-        const l =
-          x > 0
-          ? transformed[index-4]
-          : 0;
-
-        const u =
-          y > 0
-          ? transformed[index-stride]
-          : 0;
-
-        const ul =
-          x > 0 && y > 0
-          ? transformed[index-stride-4]
-          : 0;
-
-        const zig =
-          residuals[p++];
-
-        const residual =
-          (zig & 1)
-          ? -((zig+1)>>1)
-          : zig>>1;
-
-        transformed[index] =
-          residual +
-          predict(mode,l,u,ul);
+    const rowStart = y * stride;
+    for (let x = 0; x < width; x++) {
+      const base = rowStart + x * 4;
+      for (let c = 0; c < 4; c++) {
+        const idx = base + c;
+        const l = x > 0 ? output[idx - 4] : 0;
+        const u = y > 0 ? output[idx - stride] : 0;
+        const ul = (x > 0 && y > 0) ? output[idx - stride - 4] : 0;
+        const res = residuals[p++];
+        output[idx] = (res + predict(mode, l, u, ul)) & 255;
       }
     }
   }
-
-  return inverseColorTransform(transformed);
+  return output;
 }
 
-/* =========================================================
-   NEXUSPNG DECODER
-========================================================= */
+/* Palette Encoder */
+function paletteEncode(rgba) {
+  const map = new Map();
+  const palette = [];
+  const indices = new Uint8Array(rgba.length / 4);
 
-function decodeNexusPNG(data){
+  for (let i = 0; i < rgba.length; i += 4) {
+    const key = (rgba[i] | (rgba[i + 1] << 8) | (rgba[i + 2] << 16) | (rgba[i + 3] << 24)) >>> 0;
+    let id = map.get(key);
+    if (id === undefined) {
+      id = palette.length;
+      if (id >= 256) return null;
+      map.set(key, id);
+      palette.push(key);
+    }
+    indices[i / 4] = id;
+  }
 
-  if(
-    data[0] !== 0x4E ||
-    data[1] !== 0x58 ||
-    data[2] !== 0x50 ||
-    data[3] !== 0x34
-  ){
+  const paletteBytes = new Uint8Array(palette.length * 4);
+  for (let i = 0; i < palette.length; i++) {
+    const c = palette[i];
+    paletteBytes[i * 4]     = c & 255;
+    paletteBytes[i * 4 + 1] = (c >>> 8) & 255;
+    paletteBytes[i * 4 + 2] = (c >>> 16) & 255;
+    paletteBytes[i * 4 + 3] = (c >>> 24) & 255;
+  }
+
+  return { paletteCount: palette.length, paletteBytes, indices };
+}
+
+/* Container Builder & Decoder */
+function makeHeader(codec, width, height, payloadLength) {
+  const magic = new Uint8Array([0x4E, 0x58, 0x50, 0x34, codec]);
+  return concatUint8Arrays([
+    magic,
+    encodeVarint(width),
+    encodeVarint(height),
+    encodeVarint(payloadLength)
+  ]);
+}
+
+async function encodeNexusPNG(rgba, width, height) {
+  setProgress(5, "Testing palette mode...");
+  await yieldFrame();
+
+  const candidates = [];
+
+  /* Raw candidate */
+  const rawHeader = makeHeader(0, width, height, rgba.length);
+  candidates.push({
+    codec: "Raw RGBA",
+    data: concatUint8Arrays([rawHeader, rgba]),
+    predictor: "None",
+    matches: 0
+  });
+
+  /* Palette candidate */
+  const pal = paletteEncode(rgba);
+  if (pal) {
+    const compressedIndices = await compressDeflate(pal.indices);
+    const payload = concatUint8Arrays([
+      encodeVarint(pal.paletteCount),
+      pal.paletteBytes,
+      encodeVarint(compressedIndices.length),
+      compressedIndices
+    ]);
+    const header = makeHeader(1, width, height, payload.length);
+    candidates.push({
+      codec: "Palette (Indexed)",
+      data: concatUint8Arrays([header, payload]),
+      predictor: "Palette Bit-Pack",
+      matches: pal.paletteCount
+    });
+  }
+
+  /* Spatial predictive candidate */
+  setProgress(15, "Evaluating spatial predictors...");
+  await yieldFrame();
+  const predDirect = await makePredictedData(rgba, width, height);
+
+  setProgress(45, "Compressing residual stream...");
+  await yieldFrame();
+  const compDirect = await compressDeflate(predDirect.data);
+  const payloadDirect = concatUint8Arrays([
+    encodeVarint(predDirect.modes.length),
+    predDirect.modes,
+    encodeVarint(compDirect.length),
+    compDirect
+  ]);
+  const headerDirect = makeHeader(2, width, height, payloadDirect.length);
+  candidates.push({
+    codec: "Spatial 7-Way",
+    data: concatUint8Arrays([headerDirect, payloadDirect]),
+    predictor: "Adaptive Spatial",
+    matches: compDirect.length
+  });
+
+  /* Delta-Green RCT candidate */
+  setProgress(60, "Testing Delta-Green transform...");
+  await yieldFrame();
+  const dgData = transformDeltaGreen(rgba);
+  const predDg = await makePredictedData(dgData, width, height);
+  const compDg = await compressDeflate(predDg.data);
+  const payloadDg = concatUint8Arrays([
+    encodeVarint(predDg.modes.length),
+    predDg.modes,
+    encodeVarint(compDg.length),
+    compDg
+  ]);
+  const headerDg = makeHeader(3, width, height, payloadDg.length);
+  candidates.push({
+    codec: "RCT Delta-Green + 7-Way",
+    data: concatUint8Arrays([headerDg, payloadDg]),
+    predictor: "Delta-Green Adaptive",
+    matches: compDg.length
+  });
+
+  candidates.sort((a, b) => a.data.length - b.data.length);
+  const winner = candidates[0];
+
+  setProgress(88, "Verifying compressed image accuracy...");
+  await yieldFrame();
+
+  const decoded = await decodeNexusPNG(winner.data);
+  const verified = verifyPixels(rgba, decoded.rgba);
+
+  if (!verified) throw new Error("Lossless verification failed");
+
+  setProgress(100, "Compression complete");
+
+  return {
+    data: winner.data,
+    codec: winner.codec,
+    predictor: winner.predictor,
+    matches: winner.matches,
+    verified: true
+  };
+}
+
+async function decodeNexusPNG(data) {
+  if (data[0] !== 0x4E || data[1] !== 0x58 || data[2] !== 0x50 || data[3] !== 0x34) {
     throw new Error("Not a NexusPNG v4 file");
   }
 
   const codec = data[4];
-  const pos = {i:5};
+  const pos = { i: 5 };
+  const width = decodeVarint(data, pos);
+  const height = decodeVarint(data, pos);
+  const payloadLength = decodeVarint(data, pos);
+  const payload = data.subarray(pos.i, pos.i + payloadLength);
 
-  const width =
-    readVarint(data,pos);
-
-  const height =
-    readVarint(data,pos);
-
-  const payloadLength =
-    readVarint(data,pos);
-
-  const payload =
-    data.subarray(
-      pos.i,
-      pos.i + payloadLength
-    );
-
-  if(codec === 0){
-
-    return {
-      width,
-      height,
-      rgba:new Uint8ClampedArray(payload)
-    };
+  if (codec === 0) {
+    return { width, height, rgba: new Uint8ClampedArray(payload) };
   }
 
-  if(codec === 1){
+  if (codec === 1) {
+    const pPos = { i: 0 };
+    const paletteCount = decodeVarint(payload, pPos);
+    const paletteBytes = payload.subarray(pPos.i, pPos.i + paletteCount * 4);
+    pPos.i += paletteCount * 4;
+    const compSize = decodeVarint(payload, pPos);
+    const compIndices = payload.subarray(pPos.i, pPos.i + compSize);
+    const indices = await decompressDeflate(compIndices);
 
-    return {
-      width,
-      height,
-      rgba:paletteDecode(
-        payload,
-        width*height
-      )
-    };
+    const rgba = new Uint8ClampedArray(width * height * 4);
+    for (let i = 0; i < indices.length; i++) {
+      const idx = indices[i];
+      const pIdx = idx * 4;
+      const rIdx = i * 4;
+      rgba[rIdx]     = paletteBytes[pIdx];
+      rgba[rIdx + 1] = paletteBytes[pIdx + 1];
+      rgba[rIdx + 2] = paletteBytes[pIdx + 2];
+      rgba[rIdx + 3] = paletteBytes[pIdx + 3];
+    }
+    return { width, height, rgba };
   }
 
-  if(codec === 2){
+  if (codec === 2 || codec === 3) {
+    const pPos = { i: 0 };
+    const modeCount = decodeVarint(payload, pPos);
+    const modes = payload.subarray(pPos.i, pPos.i + modeCount);
+    pPos.i += modeCount;
+    const compSize = decodeVarint(payload, pPos);
+    const compResiduals = payload.subarray(pPos.i, pPos.i + compSize);
+    const residuals = await decompressDeflate(compResiduals);
 
-    return {
-      width,
-      height,
-      rgba:decodePredictive(
-        payload,
-        width,
-        height
-      )
-    };
+    const unfiltered = unfilterData(residuals, modes, width, height);
+    const rgba = codec === 3 ? inverseDeltaGreen(unfiltered) : new Uint8ClampedArray(unfiltered);
+    return { width, height, rgba };
   }
 
   throw new Error("Unknown NexusPNG codec");
 }
 
-/* =========================================================
-   EXACT VERIFICATION
-========================================================= */
-
-function verifyPixels(a,b){
-
-  if(a.length !== b.length)
-    return false;
-
-  /*
-    Chunk the comparison to avoid one giant operation.
-  */
-
-  for(let i=0;i<a.length;i++){
-
-    if(a[i] !== b[i])
-      return false;
+function verifyPixels(a, b) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
   }
-
   return true;
 }
 
-/* =========================================================
-   MAIN NEXUSPNG ENCODER
-========================================================= */
-
-async function encodeNexusPNG(rgba,width,height){
-
-  /*
-    Raw fallback.
-  */
-
-  setProgress(2,"Preparing raw fallback...");
-  await yieldFrame();
-
-  const raw =
-    buildRaw(
-      width,
-      height,
-      rgba
-    );
-
-  /*
-    Palette candidate.
-  */
-
-  setProgress(5,"Testing palette mode...");
-  await yieldFrame();
-
-  let palette = null;
-
-  try{
-    palette =
-      paletteEncode(rgba);
-  }catch(e){
-    palette = null;
-  }
-
-  /*
-    Predictive candidate.
-  */
-
-  setProgress(8,"Applying reversible color transform...");
-  await yieldFrame();
-
-  const transformed =
-    colorTransform(rgba);
-
-  const predicted =
-    await makePredictedData(
-      transformed,
-      width,
-      height
-    );
-
-  setProgress(24,"Building LZ matches...");
-  await yieldFrame();
-
-  const lz =
-    lzEncode(
-      predicted.data
-    );
-
-  setProgress(78,"Building NexusPNG...");
-  await yieldFrame();
-
-  const predictive =
-    buildPredictive(
-      width,
-      height,
-      predicted.data,
-      predicted.modes,
-      lz
-    );
-
-  const candidates = [
-    {
-      codec:"Raw",
-      data:raw,
-      predictor:"None",
-      matches:0
-    },
-    {
-      codec:"Predictive + LZ",
-      data:predictive,
-      predictor:"Adaptive 7-way",
-      matches:lz.matches
-    }
-  ];
-
-  if(palette){
-
-    candidates.push({
-      codec:"Palette",
-      data:buildPalette(
-        width,
-        height,
-        palette
-      ),
-      predictor:"Palette",
-      matches:0,
-      colors:palette.colors
-    });
-  }
-
-  candidates.sort(
-    (a,b)=>a.data.length-b.data.length
-  );
-
-  const winner =
-    candidates[0];
-
-  setProgress(88,"Verifying compressed image...");
-  await yieldFrame();
-
-  /*
-    Decode immediately. If our custom format is broken,
-    we refuse to present it as valid.
-  */
-
-  const decoded =
-    decodeNexusPNG(
-      winner.data
-    );
-
-  const verified =
-    verifyPixels(
-      rgba,
-      decoded.rgba
-    );
-
-  if(!verified)
-    throw new Error(
-      "Lossless verification failed"
-    );
-
-  setProgress(100,"Compression complete");
-
-  return {
-    data:winner.data,
-    codec:winner.codec,
-    predictor:winner.predictor,
-    matches:winner.matches,
-    verified:true
-  };
-}
-
-/* =========================================================
-   IMAGE LOADING
-========================================================= */
-
+/* Image Loading */
 async function loadImage(file){
-
-  /*
-    createImageBitmap is preferred because it avoids some
-    unnecessary DOM image work.
-
-    There is intentionally NO file-size check here.
-  */
-
   let bitmap;
-
   try{
-
-    bitmap =
-      await createImageBitmap(file);
-
+    bitmap = await createImageBitmap(file);
   }catch(e){
-
-    /*
-      Fallback for browsers where createImageBitmap
-      refuses a particular format.
-    */
-
-    const url =
-      URL.createObjectURL(file);
-
+    const url = URL.createObjectURL(file);
     try{
-
-      const img =
-        await new Promise((resolve,reject)=>{
-
-          const image =
-            new Image();
-
-          image.onload =
-            ()=>resolve(image);
-
-          image.onerror =
-            ()=>reject(
-              new Error(
-                "Browser could not decode this image"
-              )
-            );
-
-          image.src = url;
-        });
-
+      const img = await new Promise((resolve,reject)=>{
+        const image = new Image();
+        image.onload = ()=>resolve(image);
+        image.onerror = ()=>reject(new Error("Browser could not decode this image"));
+        image.src = url;
+      });
       bitmap = img;
-
     }finally{
-
       URL.revokeObjectURL(url);
     }
   }
@@ -1898,494 +1064,171 @@ async function loadImage(file){
   const width = bitmap.width;
   const height = bitmap.height;
 
-  if(
-    !width ||
-    !height
-  ){
+  if(!width || !height){
     throw new Error("Invalid image dimensions");
   }
 
-  /*
-    Browser canvas has its own practical limits.
-    This is NOT an arbitrary file-size restriction.
-    It prevents impossible canvas allocations.
-  */
-
-  const pixels =
-    width * height;
-
-  if(
-    pixels >
-    268000000
-  ){
-    throw new Error(
-      "The browser cannot safely allocate a canvas this large. " +
-      "The file itself was accepted, but this image exceeds " +
-      "the browser's practical pixel-memory limit."
-    );
+  const pixels = width * height;
+  if(pixels > 268000000){
+    throw new Error("Image exceeds browser memory limits.");
   }
 
-  const canvas =
-    document.createElement("canvas");
-
+  const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if(!ctx) throw new Error("Canvas unavailable");
 
-  const ctx =
-    canvas.getContext(
-      "2d",
-      {
-        willReadFrequently:true
-      }
-    );
-
-  if(!ctx)
-    throw new Error("Canvas unavailable");
-
-  ctx.drawImage(
-    bitmap,
-    0,
-    0
-  );
-
-  if(bitmap.close)
-    bitmap.close();
+  ctx.drawImage(bitmap, 0, 0);
+  if(bitmap.close) bitmap.close();
 
   return {
     width,
     height,
-    rgba:ctx.getImageData(
-      0,
-      0,
-      width,
-      height
-    ).data
+    rgba: ctx.getImageData(0, 0, width, height).data
   };
 }
 
-/* =========================================================
-   BROWSER IMAGE ENCODING
-========================================================= */
-
-async function canvasBlob(
-  rgba,
-  width,
-  height,
-  type,
-  quality
-){
-
-  const canvas =
-    document.createElement("canvas");
-
+async function canvasBlob(rgba, width, height, type, quality){
+  const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if(!ctx) throw new Error("Canvas unavailable");
 
-  const ctx =
-    canvas.getContext("2d");
-
-  if(!ctx)
-    throw new Error("Canvas unavailable");
-
-  const imageData =
-    new ImageData(
-      rgba,
-      width,
-      height
-    );
-
-  ctx.putImageData(
-    imageData,
-    0,
-    0
-  );
+  const imageData = new ImageData(new Uint8ClampedArray(rgba), width, height);
+  ctx.putImageData(imageData, 0, 0);
 
   return await new Promise((resolve,reject)=>{
-
-    canvas.toBlob(
-      blob=>{
-        if(blob) resolve(blob);
-        else reject(
-          new Error(
-            "Browser failed to encode image"
-          )
-        );
-      },
-      type,
-      quality
-    );
-
+    canvas.toBlob(blob=>{
+      if(blob) resolve(blob);
+      else reject(new Error("Browser failed to encode image"));
+    }, type, quality);
   });
 }
 
-/* =========================================================
-   DOWNLOAD
-========================================================= */
-
-function downloadBlob(blob,name){
-
-  const url =
-    URL.createObjectURL(blob);
-
-  const a =
-    document.createElement("a");
-
+function downloadBlob(blob, name){
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
   a.href = url;
   a.download = name;
-
   document.body.appendChild(a);
   a.click();
   a.remove();
-
-  setTimeout(
-    ()=>URL.revokeObjectURL(url),
-    5000
-  );
+  setTimeout(()=>URL.revokeObjectURL(url), 5000);
 }
 
-/* =========================================================
-   UI
-========================================================= */
+function updateCard(prefix, size, original){
+  $(prefix+"Size").textContent = formatBytes(size);
+  const difference = percentDifference(size, original);
+  const bar = Math.min(100, Math.max(2, size/original*100));
 
-function updateCard(
-  prefix,
-  size,
-  original
-){
-
-  $(prefix+"Size")
-    .textContent =
-    formatBytes(size);
-
-  const difference =
-    percentDifference(
-      size,
-      original
-    );
-
-  const bar =
-    Math.min(
-      100,
-      Math.max(
-        2,
-        size/original*100
-      )
-    );
-
-  $(prefix+"Bar")
-    .style.width =
-    bar + "%";
+  $(prefix+"Bar").style.width = bar + "%";
 
   if(size < original){
-
-    $(prefix+"Saving")
-      .className =
-      "savings smaller";
-
-    $(prefix+"Saving")
-      .textContent =
-      Math.abs(difference).toFixed(1) +
-      "% smaller than source";
-
+    $(prefix+"Saving").className = "savings smaller";
+    $(prefix+"Saving").textContent = Math.abs(difference).toFixed(1) + "% smaller than source";
   }else{
-
-    $(prefix+"Saving")
-      .className =
-      "savings larger";
-
-    $(prefix+"Saving")
-      .textContent =
-      difference.toFixed(1) +
-      "% larger than source";
+    $(prefix+"Saving").className = "savings larger";
+    $(prefix+"Saving").textContent = difference.toFixed(1) + "% larger than source";
   }
 }
 
 async function processFile(file){
+  if(!file) return;
 
-  if(!file)
-    return;
-
-  /*
-    IMPORTANT:
-    No file-size rejection.
-  */
-
-  showStatus(
-    "Reading " + file.name + "..."
-  );
-
+  showStatus("Reading " + file.name + "...");
   results.classList.remove("show");
 
   try{
-
-    setProgress(
-      2,
-      "Opening image..."
-    );
-
+    setProgress(2, "Opening image...");
     await yieldFrame();
 
-    const image =
-      await loadImage(file);
+    const image = await loadImage(file);
+    current = { file, image };
 
-    current = {
-      file,
-      image
-    };
+    $("preview").src = URL.createObjectURL(file);
+    $("sourceMeta").textContent = `${image.width} × ${image.height} · ${formatBytes(file.size)}`;
 
-    $("preview").src =
-      URL.createObjectURL(file);
+    setProgress(4, "Encoding PNG...");
+    const pngBlob = await canvasBlob(image.rgba, image.width, image.height, "image/png");
 
-    $("sourceMeta").textContent =
-      `${image.width} × ${image.height} · ${formatBytes(file.size)}`;
+    setProgress(7, "Encoding JPEG comparison...");
+    const jpgBlob = await canvasBlob(image.rgba, image.width, image.height, "image/jpeg", .92);
 
-    /*
-      PNG
-    */
-
-    setProgress(
-      4,
-      "Encoding PNG..."
-    );
-
-    const pngBlob =
-      await canvasBlob(
-        image.rgba,
-        image.width,
-        image.height,
-        "image/png"
-      );
-
-    /*
-      JPEG
-    */
-
-    setProgress(
-      7,
-      "Encoding JPEG comparison..."
-    );
-
-    const jpgBlob =
-      await canvasBlob(
-        image.rgba,
-        image.width,
-        image.height,
-        "image/jpeg",
-        .92
-      );
-
-    /*
-      NexusPNG
-    */
-
-    const nxp =
-      await encodeNexusPNG(
-        image.rgba,
-        image.width,
-        image.height
-      );
+    const nxp = await encodeNexusPNG(image.rgba, image.width, image.height);
 
     current.png = pngBlob;
     current.jpg = jpgBlob;
-    current.nxp = new Blob(
-      [nxp.data],
-      {
-        type:"image/x-nexuspng"
-      }
-    );
+    current.nxp = new Blob([nxp.data], { type: "image/x-nexuspng" });
 
-    updateCard(
-      "png",
-      pngBlob.size,
-      file.size
-    );
+    updateCard("png", pngBlob.size, file.size);
+    updateCard("jpg", jpgBlob.size, file.size);
+    updateCard("nxp", nxp.data.length, file.size);
 
-    updateCard(
-      "jpg",
-      jpgBlob.size,
-      file.size
-    );
+    $("pngDetail").textContent = "Standard browser PNG";
+    $("jpgDetail").textContent = "JPEG quality 92 · lossy";
+    $("nxpDetail").textContent = `${nxp.codec} · ${formatBytes(nxp.data.length)}`;
 
-    updateCard(
-      "nxp",
-      nxp.data.length,
-      file.size
-    );
-
-    $("pngDetail").textContent =
-      "Standard browser PNG";
-
-    $("jpgDetail").textContent =
-      "JPEG quality 92 · lossy";
-
-    $("nxpDetail").textContent =
-      `${nxp.codec} · ${formatBytes(nxp.data.length)}`;
-
-    $("codecStat").textContent =
-      nxp.codec;
-
-    $("predictorStat").textContent =
-      nxp.predictor;
-
-    $("matchesStat").textContent =
-      nxp.matches.toLocaleString();
-
-    $("verifyStat").textContent =
-      nxp.verified
-      ? "PIXEL PERFECT"
-      : "FAILED";
+    $("codecStat").textContent = nxp.codec;
+    $("predictorStat").textContent = nxp.predictor;
+    $("matchesStat").textContent = nxp.matches.toLocaleString();
+    $("verifyStat").textContent = nxp.verified ? "PIXEL PERFECT" : "FAILED";
 
     results.classList.add("show");
-
-    setProgress(
-      100,
-      "Done"
-    );
-
-    setTimeout(
-      hideStatus,
-      1000
-    );
+    setProgress(100, "Done");
+    setTimeout(hideStatus, 1000);
 
   }catch(error){
-
     console.error(error);
-
-    setProgress(
-      0,
-      "Error: " + error.message
-    );
-
+    setProgress(0, "Error: " + error.message);
     $("statusText").classList.add("error");
-
   }
 }
 
-/* =========================================================
-   FILE INPUT
-========================================================= */
-
-fileInput.addEventListener(
-  "change",
-  e=>{
-    const file =
-      e.target.files &&
-      e.target.files[0];
-
-    if(file)
-      processFile(file);
-  }
-);
-
-/* =========================================================
-   DRAG & DROP
-========================================================= */
-
-[
-  "dragenter",
-  "dragover"
-].forEach(event=>{
-
-  drop.addEventListener(
-    event,
-    e=>{
-      e.preventDefault();
-      e.stopPropagation();
-
-      drop.classList.add("drag");
-    }
-  );
-
+fileInput.addEventListener("change", e => {
+  const file = e.target.files && e.target.files[0];
+  if(file) processFile(file);
 });
 
-[
-  "dragleave",
-  "drop"
-].forEach(event=>{
-
-  drop.addEventListener(
-    event,
-    e=>{
-      e.preventDefault();
-      e.stopPropagation();
-
-      drop.classList.remove("drag");
-    }
-  );
-
+["dragenter", "dragover"].forEach(event => {
+  drop.addEventListener(event, e => {
+    e.preventDefault();
+    e.stopPropagation();
+    drop.classList.add("drag");
+  });
 });
 
-drop.addEventListener(
-  "drop",
-  e=>{
+["dragleave", "drop"].forEach(event => {
+  drop.addEventListener(event, e => {
+    e.preventDefault();
+    e.stopPropagation();
+    drop.classList.remove("drag");
+  });
+});
 
-    const files =
-      e.dataTransfer.files;
-
-    if(!files || !files.length)
-      return;
-
-    const file =
-      files[0];
-
-    if(!file.type.startsWith("image/")){
-
-      showStatus(
-        "Please select an image the browser can decode."
-      );
-
-      return;
-    }
-
-    processFile(file);
+drop.addEventListener("drop", e => {
+  const files = e.dataTransfer.files;
+  if(!files || !files.length) return;
+  const file = files[0];
+  if(!file.type.startsWith("image/") && !file.name.match(/\.(png|jpe?g|webp|gif|bmp|svg|avif)$/i)){
+    showStatus("Please select an image the browser can decode.");
+    return;
   }
-);
+  processFile(file);
+});
 
-/* =========================================================
-   DOWNLOAD BUTTONS
-========================================================= */
+$("downloadPng").addEventListener("click", () => {
+  if(current?.png) downloadBlob(current.png, "image.png");
+});
 
-$("downloadPng").addEventListener(
-  "click",
-  ()=>{
+$("downloadJpg").addEventListener("click", () => {
+  if(current?.jpg) downloadBlob(current.jpg, "image.jpg");
+});
 
-    if(!current?.png)
-      return;
-
-    downloadBlob(
-      current.png,
-      "image.png"
-    );
-  }
-);
-
-$("downloadJpg").addEventListener(
-  "click",
-  ()=>{
-
-    if(!current?.jpg)
-      return;
-
-    downloadBlob(
-      current.jpg,
-      "image.jpg"
-    );
-  }
-);
-
-$("downloadNxp").addEventListener(
-  "click",
-  ()=>{
-
-    if(!current?.nxp)
-      return;
-
-    downloadBlob(
-      current.nxp,
-      "image.nexuspng"
-    );
-  }
-);
+$("downloadNxp").addEventListener("click", () => {
+  if(current?.nxp) downloadBlob(current.nxp, "image.nexuspng");
+});
 </script>
 
 </body>
